@@ -1,25 +1,14 @@
 #!/usr/bin/env python3
 """
 Truco Paulista — Jogador 2 (CLIENT)
-Este arquivo substitui player_2.py com servidor separado.
-Roda na máquina do Jogador 2, conectando diretamente ao Jogador 1.
-
-Uso:
-  python player_2_client.py
-  → informe o IP do Jogador 1 quando solicitado (ou edite HOST_P1 abaixo).
 """
 
 import socket, json, time, os
 import truco_game as tg
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  CONFIGURAÇÃO
-# ══════════════════════════════════════════════════════════════════════════════
-
 PLAYER_ID   = 'p2'
 OPPONENT_ID = 'p1'
 
-# IP do Jogador 1 (host). Deixe None para perguntar no início.
 HOST_P1   = None
 HOST_PORT = 5000
 
@@ -32,14 +21,34 @@ CHAVE_PRIVADA  = [149, 247]
 
 def criptografar(mensagem: str, chave: list) -> list:
     e, n = chave
-    return [pow(ord(ch), e, n) for ch in mensagem if ord(ch) < n]
+    resultado = []
+    for ch in mensagem:
+        code = ord(ch)
+        if code >= n:
+            resultado.append(n)
+            resultado.append(code // n)
+            resultado.append(code % n)
+        else:
+            resultado.append(pow(code, e, n))
+    return resultado
 
 def descriptografar(cifrado: list, chave: list) -> str:
     d, n = chave
-    return ''.join(chr(pow(c, d, n)) for c in cifrado)
+    resultado = []
+    i = 0
+    while i < len(cifrado):
+        val = cifrado[i]
+        if val == n:
+            code = cifrado[i+1] * n + cifrado[i+2]
+            resultado.append(chr(code))
+            i += 3
+        else:
+            resultado.append(chr(pow(val, d, n)))
+            i += 1
+    return ''.join(resultado)
 
 def _empacotar(dados: dict) -> bytes:
-    texto   = json.dumps(dados)
+    texto   = json.dumps(dados, ensure_ascii=True)
     cifrado = criptografar(texto, CHAVE_PUBLICA)
     return json.dumps(cifrado).encode('utf-8')
 
@@ -56,8 +65,6 @@ def _desempacotar(raw: bytes) -> dict:
 def send_message(sock, addr, dados: dict):
     try:
         sock.sendto(_empacotar(dados), addr)
-        print(f"[NET] → host | tipo={dados.get('tipo_msg')} acao={dados.get('dados_extras',{}).get('acao','')}")
-        print(f"[CRIPTO] Mensagem criptografada com sucesso")
     except Exception as ex:
         print(f"[ERRO REDE] {ex}")
 
@@ -66,8 +73,6 @@ def receive_message(sock, timeout=0.5):
     try:
         raw, _ = sock.recvfrom(65535)
         dados  = _desempacotar(raw)
-        print(f"[NET] ← host | tipo={dados.get('tipo_msg')}")
-        print(f"[CRIPTO] Mensagem descriptografada com sucesso")
         return dados
     except socket.timeout:
         return None
@@ -257,14 +262,25 @@ def main():
     }
 
     conectado = False
+    tentativa = 0
     while not conectado:
+        tentativa += 1
+        print(f"[NET] Tentativa {tentativa} — enviando INICIO...")
         send_message(sock, srv, conn_msg)
         resp = receive_message(sock, timeout=2.0)
-        if resp and resp.get('tipo_msg') == 'INICIO':
+        if resp is None:
+            print(f"[NET] Sem resposta do host. Verifique:")
+            print(f"      • IP correto? ({HOST_P1}:{HOST_PORT})")
+            print(f"      • Host está rodando player_1_host.py?")
+            print(f"      • Firewall permite UDP porta {HOST_PORT}?")
+            time.sleep(1)
+            continue
+
+        if resp.get('tipo_msg') == 'INICIO':
             print(f"[JOGO] Conectado! {resp.get('_message', '')}")
             conectado = True
         else:
-            print("[NET] Aguardando host... tentando novamente.")
+            print(f"[NET] Resposta inesperada: tipo={resp.get('tipo_msg')} — tentando novamente.")
             time.sleep(1)
 
     # ── Aguardar início da partida ───────────────────────────────────────────
@@ -318,7 +334,6 @@ def main():
 
         needs_me = (h.get('needs') == PLAYER_ID)
         if not needs_me:
-            # Polling: aguarda atualização do host
             dados = receive_message(sock, timeout=0.7)
             if dados and dados.get('_phase') is not None:
                 estado = msg_para_estado(dados)
@@ -329,7 +344,6 @@ def main():
         if action:
             msg = acao_para_msg(action)
             send_message(sock, srv, msg)
-            print(f"[JOGO] Jogada enviada: {action}")
             for _ in range(30):
                 dados = receive_message(sock, timeout=0.5)
                 if dados:

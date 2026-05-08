@@ -1,30 +1,16 @@
 #!/usr/bin/env python3
 """
 Truco Paulista — Jogador 1 (HOST)
-Este arquivo substitui server.py + player_1.py.
-Roda na máquina do Jogador 1, que hospeda a partida.
-
-Uso:
-  1. Execute este arquivo: python player_1_host.py
-  2. Informe seu IP para o Jogador 2 (exibido na tela).
-  3. Aguarde o Jogador 2 conectar.
-
-O Jogador 2 deve rodar player_2_client.py apontando para o IP desta máquina.
 """
 
 import socket, json, time, os, threading
 import truco_game as tg
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  CONFIGURAÇÃO
-# ══════════════════════════════════════════════════════════════════════════════
-
 PLAYER_ID   = 'p1'
 OPPONENT_ID = 'p2'
 
-# Porta que este host vai escutar (Jogador 2 conecta aqui)
 HOST_PORT = 5000
-HOST_BIND = '0.0.0.0'   # escuta em todas as interfaces
+HOST_BIND = '0.0.0.0'
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  RSA
@@ -38,21 +24,38 @@ def _egcd(a, b):
     g, x, y = _egcd(b % a, a)
     return g, y - (b // a) * x, x
 
-def _inverso_modular(e, phi):
-    g, x, _ = _egcd(e, phi)
-    if g != 1: raise ValueError("e e phi não coprimos!")
-    return x % phi
-
 def criptografar(mensagem: str, chave: list) -> list:
     e, n = chave
-    return [pow(ord(ch), e, n) for ch in mensagem if ord(ch) < n]
+    resultado = []
+    for ch in mensagem:
+        code = ord(ch)
+        if code >= n:
+            # Escapa caracteres fora do range como sequência segura
+            resultado.append(n)          # marcador de escape
+            resultado.append(code // n)
+            resultado.append(code % n)
+        else:
+            resultado.append(pow(code, e, n))
+    return resultado
 
 def descriptografar(cifrado: list, chave: list) -> str:
     d, n = chave
-    return ''.join(chr(pow(c, d, n)) for c in cifrado)
+    resultado = []
+    i = 0
+    while i < len(cifrado):
+        val = cifrado[i]
+        if val == n:
+            # Sequência de escape: próximos dois valores reconstroem o char
+            code = cifrado[i+1] * n + cifrado[i+2]
+            resultado.append(chr(code))
+            i += 3
+        else:
+            resultado.append(chr(pow(val, d, n)))
+            i += 1
+    return ''.join(resultado)
 
 def _empacotar(dados: dict) -> bytes:
-    texto   = json.dumps(dados)
+    texto   = json.dumps(dados, ensure_ascii=True)
     cifrado = criptografar(texto, CHAVE_PUBLICA)
     return json.dumps(cifrado).encode('utf-8')
 
@@ -63,13 +66,13 @@ def _desempacotar(raw: bytes) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  ESTADO COMPARTILHADO (protegido por lock)
+#  ESTADO COMPARTILHADO
 # ══════════════════════════════════════════════════════════════════════════════
 
-_lock          = threading.Lock()
-_estado        = tg.new_game()
-_addr_p2       = None          # endereço UDP do Jogador 2
-_estado_novo   = threading.Event()   # sinaliza ao loop principal que houve update
+_lock        = threading.Lock()
+_estado      = tg.new_game()
+_addr_p2     = None
+_estado_novo = threading.Event()
 
 
 def _get_estado():
@@ -85,7 +88,7 @@ def _set_estado(novo):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  PROTOCOLO — mesma estrutura do server.py original
+#  PROTOCOLO
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _estado_para_msg(st, tipo, dados_extras=None):
@@ -118,19 +121,19 @@ def _estado_para_msg(st, tipo, dados_extras=None):
 
 def _enviar(sock, addr, dados):
     try:
-        sock.sendto(_empacotar(dados), addr)
+        packed = _empacotar(dados)
+        sock.sendto(packed, addr)
     except Exception as ex:
         print(f"[ERRO REDE] Falha ao enviar para {addr}: {ex}")
 
 
 def _broadcast(sock, addr_p2, st, tipo, dados_extras=None):
-    """Envia o estado atual para o Jogador 2."""
     if addr_p2:
         _enviar(sock, addr_p2, _estado_para_msg(st, tipo, dados_extras))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  THREAD DO SERVIDOR — processa mensagens do Jogador 2
+#  THREAD DO SERVIDOR
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _thread_servidor(sock):
@@ -143,12 +146,21 @@ def _thread_servidor(sock):
         sock.settimeout(1.0)
         try:
             raw, addr = sock.recvfrom(65535)
-            dados = _desempacotar(raw)
         except socket.timeout:
             continue
         except Exception as ex:
-            print(f"[ERRO] {ex}")
+            print(f"[ERRO RECV] {ex}")
             continue
+
+        # Tenta descriptografar — diagnóstico detalhado se falhar
+        try:
+            dados = _desempacotar(raw)
+        except Exception as ex:
+            print(f"[ERRO CRIPTO] Pacote de {addr} não pôde ser lido: {ex}")
+            print(f"[DEBUG] Raw ({len(raw)} bytes): {raw[:80]}...")
+            continue
+
+        print(f"[DEBUG] Pacote recebido de {addr}: tipo={dados.get('tipo_msg')} vez={dados.get('vez')}")
 
         if dados.get('tipo_msg') == 'INICIO' and dados.get('vez') == 'p2':
             _addr_p2 = addr
@@ -165,14 +177,20 @@ def _thread_servidor(sock):
                 "_message": "p2 conectado! Iniciando...",
                 "_hand": None, "_winner": None, "_dealer": "p1",
             }
-            _enviar(sock, addr, ack)
+            # Envia ACK múltiplas vezes para garantir entrega (UDP não é confiável)
+            for _ in range(3):
+                _enviar(sock, addr, ack)
+                time.sleep(0.05)
 
     # ── Iniciar partida ──────────────────────────────────────────────────────
     st = _get_estado()
     st['phase'] = 'ready'
     st = tg.start_hand(st)
     _set_estado(st)
-    _broadcast(sock, _addr_p2, st, 'ESTADO')
+    # Envia estado inicial múltiplas vezes
+    for _ in range(3):
+        _broadcast(sock, _addr_p2, st, 'ESTADO')
+        time.sleep(0.1)
     print(f"[JOGO] Partida iniciada! Vira: {tg.label(st['hand']['vira'])}")
 
     # ── Loop principal do servidor ───────────────────────────────────────────
@@ -180,7 +198,6 @@ def _thread_servidor(sock):
         sock.settimeout(0.2)
         try:
             raw, addr = sock.recvfrom(65535)
-            dados = _desempacotar(raw)
         except socket.timeout:
             continue
         except Exception as ex:
@@ -190,13 +207,18 @@ def _thread_servidor(sock):
         if addr != _addr_p2:
             continue
 
+        try:
+            dados = _desempacotar(raw)
+        except Exception as ex:
+            print(f"[ERRO CRIPTO] {ex}")
+            continue
+
         tipo  = dados.get('tipo_msg')
         pid   = dados.get('vez')
         st    = _get_estado()
         phase = st.get('phase')
         h     = st.get('hand') or {}
 
-        # ── Jogada do p2 ────────────────────────────────────────────────────
         if tipo == 'JOGADA' and pid == 'p2':
             extras = dados.get('dados_extras', {})
             acao   = extras.get('acao')
@@ -223,21 +245,18 @@ def _thread_servidor(sock):
                 _set_estado(st)
                 _broadcast(sock, _addr_p2, st, 'ESTADO', {"acao": "MAO11", "resultado": msg})
 
-            # Fim de mão / partida
             if st['phase'] == 'hand_over':
                 _broadcast(sock, _addr_p2, st, 'ESTADO', {"evento": "mao_encerrada"})
             elif st['phase'] == 'game_over':
                 _broadcast(sock, _addr_p2, st, 'FIM', {"vencedor": st['winner']})
                 break
 
-        # ── Pedido de próxima mão ────────────────────────────────────────────
         elif tipo == 'ESTADO' and dados.get('dados_extras', {}).get('acao') == 'PROXIMA_MAO':
             if phase == 'hand_over':
                 st = tg.start_hand(st)
                 _set_estado(st)
                 _broadcast(sock, _addr_p2, st, 'ESTADO', {"evento": "nova_mao"})
 
-        # ── Ping / sync ──────────────────────────────────────────────────────
         elif tipo == 'ESTADO':
             _broadcast(sock, _addr_p2, st, 'ESTADO')
 
@@ -245,7 +264,7 @@ def _thread_servidor(sock):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  DISPLAY (idêntico ao player_1.py original)
+#  DISPLAY
 # ══════════════════════════════════════════════════════════════════════════════
 
 def clr():
@@ -354,12 +373,11 @@ def get_action(st):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  APLICA JOGADA DO P1 LOCALMENTE (sem rede — está na mesma máquina)
+#  APLICA JOGADA DO P1 LOCALMENTE
 # ══════════════════════════════════════════════════════════════════════════════
 
 def aplicar_acao_p1(action, sock):
     st    = _get_estado()
-    phase = st['phase']
     h     = st['hand'] or {}
     kind  = action[0]
 
@@ -389,7 +407,6 @@ def aplicar_acao_p1(action, sock):
     if msg:
         print(f"[JOGO] {msg}")
 
-    # Fim de mão / partida
     st = _get_estado()
     if st['phase'] == 'hand_over':
         _broadcast(sock, _addr_p2, st, 'ESTADO', {"evento": "mao_encerrada"})
@@ -422,23 +439,23 @@ def main():
     print(f"\n  Seu IP na rede: {ip_local}")
     print(f"  Porta:          {HOST_PORT}")
     print(f"\n  Passe para o Jogador 2:")
-    print(f"  → IP: {ip_local}   Porta: {HOST_PORT}\n")
+    print(f"  → IP: {ip_local}   Porta: {HOST_PORT}")
+    print(f"\n  ⚠️  Verifique se o firewall permite UDP na porta {HOST_PORT}")
+    print(f"     Linux:   sudo ufw allow {HOST_PORT}/udp")
+    print(f"     Windows: netsh advfirewall firewall add rule name=Truco protocol=UDP dir=in localport={HOST_PORT} action=allow\n")
 
-    # Socket UDP compartilhado entre thread e loop principal
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((HOST_BIND, HOST_PORT))
+    print(f"[NET] Socket UDP vinculado em {HOST_BIND}:{HOST_PORT} ✓\n")
 
-    # Inicia thread do servidor em background
     t = threading.Thread(target=_thread_servidor, args=(sock,), daemon=True)
     t.start()
 
-    # Aguarda Jogador 2 conectar antes de iniciar a UI
     print("[JOGO] Aguardando Jogador 2 conectar...\n")
     while _addr_p2 is None:
         time.sleep(0.3)
 
-    # Aguarda partida iniciar (thread muda o estado para 'playing')
     while True:
         st = _get_estado()
         if st.get('phase') not in ('waiting', 'ready', None):
@@ -447,7 +464,6 @@ def main():
 
     # ── Loop principal do Jogador 1 ──────────────────────────────────────────
     while True:
-        # Aguarda sinal de mudança de estado ou timeout
         _estado_novo.wait(timeout=0.5)
         _estado_novo.clear()
 
@@ -475,10 +491,8 @@ def main():
 
         needs_me = (h.get('needs') == PLAYER_ID)
         if not needs_me:
-            # Não é minha vez — aguarda evento da thread
             continue
 
-        # ── Minha vez ────────────────────────────────────────────────────────
         action = get_action(st)
         if action:
             aplicar_acao_p1(action, sock)

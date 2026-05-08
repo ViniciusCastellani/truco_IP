@@ -32,8 +32,11 @@ def manilha_str(vira):
     """Retorna string legível das manilhas em ordem, ex: 'A♣ > A♥ > A♠ > A♦'"""
     m = manilha_rank(vira['r'])
     return ' > '.join(m + SYM[s] for s in reversed(SUIT_MANILHA))
+
+
 def label(c):  return c['r'] + SYM[c['s']]
 def opp(p):    return 'p2' if p == 'p1' else 'p1'
+
 
 def deck():
     d = [{'r': r, 's': s} for s in SUITS for r in RANKS]
