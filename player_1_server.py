@@ -30,8 +30,7 @@ def criptografar(mensagem: str, chave: list) -> list:
     for ch in mensagem:
         code = ord(ch)
         if code >= n:
-            # Escapa caracteres fora do range como sequência segura
-            resultado.append(n)          # marcador de escape
+            resultado.append(n)
             resultado.append(code // n)
             resultado.append(code % n)
         else:
@@ -45,7 +44,6 @@ def descriptografar(cifrado: list, chave: list) -> str:
     while i < len(cifrado):
         val = cifrado[i]
         if val == n:
-            # Sequência de escape: próximos dois valores reconstroem o char
             code = cifrado[i+1] * n + cifrado[i+2]
             resultado.append(chr(code))
             i += 3
@@ -152,12 +150,10 @@ def _thread_servidor(sock):
             print(f"[ERRO RECV] {ex}")
             continue
 
-        # Tenta descriptografar — diagnóstico detalhado se falhar
         try:
             dados = _desempacotar(raw)
         except Exception as ex:
             print(f"[ERRO CRIPTO] Pacote de {addr} não pôde ser lido: {ex}")
-            print(f"[DEBUG] Raw ({len(raw)} bytes): {raw[:80]}...")
             continue
 
         print(f"[DEBUG] Pacote recebido de {addr}: tipo={dados.get('tipo_msg')} vez={dados.get('vez')}")
@@ -177,7 +173,6 @@ def _thread_servidor(sock):
                 "_message": "p2 conectado! Iniciando...",
                 "_hand": None, "_winner": None, "_dealer": "p1",
             }
-            # Envia ACK múltiplas vezes para garantir entrega (UDP não é confiável)
             for _ in range(3):
                 _enviar(sock, addr, ack)
                 time.sleep(0.05)
@@ -187,7 +182,6 @@ def _thread_servidor(sock):
     st['phase'] = 'ready'
     st = tg.start_hand(st)
     _set_estado(st)
-    # Envia estado inicial múltiplas vezes
     for _ in range(3):
         _broadcast(sock, _addr_p2, st, 'ESTADO')
         time.sleep(0.1)
@@ -252,10 +246,11 @@ def _thread_servidor(sock):
                 break
 
         elif tipo == 'ESTADO' and dados.get('dados_extras', {}).get('acao') == 'PROXIMA_MAO':
-            if phase == 'hand_over':
-                st = tg.start_hand(st)
-                _set_estado(st)
-                _broadcast(sock, _addr_p2, st, 'ESTADO', {"evento": "nova_mao"})
+            # FIX: não chama start_hand aqui — P1 é o único que controla o
+            # início da próxima mão (loop principal). Apenas reenvia o estado
+            # atual para P2 sincronizar caso ele ainda esteja esperando.
+            st = _get_estado()
+            _broadcast(sock, _addr_p2, st, 'ESTADO', {"evento": "sync_mao"})
 
         elif tipo == 'ESTADO':
             _broadcast(sock, _addr_p2, st, 'ESTADO')
@@ -480,9 +475,14 @@ def main():
 
         if phase == 'hand_over':
             input('\n  [Enter] para iniciar próxima mão...')
+            # FIX: somente P1 chama start_hand. A thread do servidor não o faz
+            # mais, evitando o double-shuffle que causava dessincronia.
             st = tg.start_hand(_get_estado())
             _set_estado(st)
-            _broadcast(sock, _addr_p2, st, 'ESTADO', {"evento": "nova_mao"})
+            # Envia múltiplas vezes para garantir que P2 receba o novo estado
+            for _ in range(3):
+                _broadcast(sock, _addr_p2, st, 'ESTADO', {"evento": "nova_mao"})
+                time.sleep(0.05)
             continue
 
         h = st.get('hand')

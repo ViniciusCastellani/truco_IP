@@ -3,7 +3,7 @@
 Truco Paulista — Jogador 2 (CLIENT)
 """
 
-import socket, json, time, os
+import socket, json, time, os, threading
 import truco_game as tg
 
 PLAYER_ID   = 'p2'
@@ -68,20 +68,56 @@ def send_message(sock, addr, dados: dict):
     except Exception as ex:
         print(f"[ERRO REDE] {ex}")
 
-def receive_message(sock, timeout=0.5):
-    sock.settimeout(timeout)
-    try:
-        raw, _ = sock.recvfrom(65535)
-        dados  = _desempacotar(raw)
-        return dados
-    except socket.timeout:
-        return None
-    except json.JSONDecodeError as ex:
-        print(f"[ERRO JSON] {ex}")
-        return None
-    except Exception as ex:
-        print(f"[ERRO CRIPTO] {ex}")
-        return None
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  THREAD DE RECEPÇÃO EM BACKGROUND
+#
+#  FIX: O cliente original só recebia mensagens em momentos específicos do
+#  loop, descartando tudo que chegasse enquanto o jogador estava no input().
+#  Esta thread recebe continuamente e atualiza _estado_bg, que o loop
+#  principal lê a qualquer momento.
+# ══════════════════════════════════════════════════════════════════════════════
+
+_bg_lock   = threading.Lock()
+_estado_bg = None          # último estado recebido da rede
+_estado_ev = threading.Event()
+
+
+def _set_estado_bg(st):
+    global _estado_bg
+    with _bg_lock:
+        _estado_bg = st
+    _estado_ev.set()
+
+
+def _get_estado_bg():
+    with _bg_lock:
+        return _estado_bg
+
+
+def _thread_recv(sock):
+    """Recebe continuamente mensagens do host e atualiza o estado global."""
+    while True:
+        sock.settimeout(0.3)
+        try:
+            raw, _ = sock.recvfrom(65535)
+        except socket.timeout:
+            continue
+        except OSError:
+            # Socket fechado — encerra thread
+            break
+        except Exception as ex:
+            print(f"[RECV BG] {ex}")
+            continue
+
+        try:
+            dados = _desempacotar(raw)
+        except Exception as ex:
+            print(f"[CRIPTO BG] {ex}")
+            continue
+
+        if dados.get('_phase') is not None:
+            _set_estado_bg(msg_para_estado(dados))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -267,7 +303,16 @@ def main():
         tentativa += 1
         print(f"[NET] Tentativa {tentativa} — enviando INICIO...")
         send_message(sock, srv, conn_msg)
-        resp = receive_message(sock, timeout=2.0)
+        sock.settimeout(2.0)
+        try:
+            raw, _ = sock.recvfrom(65535)
+            resp   = _desempacotar(raw)
+        except socket.timeout:
+            resp = None
+        except Exception as ex:
+            print(f"[ERRO] {ex}")
+            resp = None
+
         if resp is None:
             print(f"[NET] Sem resposta do host. Verifique:")
             print(f"      • IP correto? ({HOST_P1}:{HOST_PORT})")
@@ -283,21 +328,32 @@ def main():
             print(f"[NET] Resposta inesperada: tipo={resp.get('tipo_msg')} — tentando novamente.")
             time.sleep(1)
 
+    # ── Inicia thread de recepção em background ──────────────────────────────
+    # FIX: garante que mensagens nunca sejam descartadas enquanto o jogador
+    # está digitando. A thread atualiza _estado_bg continuamente.
+    recv_thread = threading.Thread(target=_thread_recv, args=(sock,), daemon=True)
+    recv_thread.start()
+
     # ── Aguardar início da partida ───────────────────────────────────────────
-    estado = None
     print("[JOGO] Aguardando partida iniciar...\n")
     while True:
-        dados = receive_message(sock, timeout=1.0)
-        if dados and dados.get('_phase') not in ('waiting', 'ready', None):
-            estado = msg_para_estado(dados)
+        _estado_ev.wait(timeout=1.0)
+        _estado_ev.clear()
+        st = _get_estado_bg()
+        if st and st.get('phase') not in ('waiting', 'ready', None):
+            estado = st
             print("[JOGO] Partida iniciada!")
             break
-        time.sleep(0.3)
 
     # ── Loop principal ───────────────────────────────────────────────────────
     while True:
+        # Sempre lê o estado mais recente recebido
+        novo = _get_estado_bg()
+        if novo:
+            estado = novo
+
         if estado is None:
-            time.sleep(0.3)
+            time.sleep(0.2)
             continue
 
         draw(estado)
@@ -310,33 +366,29 @@ def main():
             break
 
         if phase == 'hand_over':
-            input('\n  [Enter] para solicitar próxima mão...')
-            req = {
-                "tipo_msg": "ESTADO", "vez": PLAYER_ID,
-                "vira": None, "valor_rodada": 1,
-                "mesa": {"p1": None, "p2": None},
-                "pontos": estado['scores'],
-                "qtd_cartas": {"p1": 0, "p2": 0},
-                "dados_extras": {"acao": "PROXIMA_MAO"},
-            }
-            send_message(sock, srv, req)
-            for _ in range(20):
-                dados = receive_message(sock, timeout=0.5)
-                if dados and dados.get('_phase') == 'playing':
-                    estado = msg_para_estado(dados)
+            # FIX: P2 não chama start_hand nem envia PROXIMA_MAO.
+            # Apenas aguarda P1 enviar o novo estado (nova mão) passivamente.
+            # Isso elimina o double-shuffle que causava dessincronia.
+            print('\n  Aguardando próxima mão...')
+            while True:
+                _estado_ev.wait(timeout=1.0)
+                _estado_ev.clear()
+                novo = _get_estado_bg()
+                if novo and novo.get('phase') in ('playing', 'mao11'):
+                    estado = novo
                     break
             continue
 
         h = estado.get('hand')
         if not h:
-            time.sleep(0.3)
+            time.sleep(0.2)
             continue
 
         needs_me = (h.get('needs') == PLAYER_ID)
         if not needs_me:
-            dados = receive_message(sock, timeout=0.7)
-            if dados and dados.get('_phase') is not None:
-                estado = msg_para_estado(dados)
+            # Não é minha vez — aguarda atualização da thread de background
+            _estado_ev.wait(timeout=1.0)
+            _estado_ev.clear()
             continue
 
         # ── Minha vez ────────────────────────────────────────────────────────
@@ -344,13 +396,24 @@ def main():
         if action:
             msg = acao_para_msg(action)
             send_message(sock, srv, msg)
-            for _ in range(30):
-                dados = receive_message(sock, timeout=0.5)
-                if dados:
-                    estado = msg_para_estado(dados)
-                    break
+            # Aguarda confirmação do host (estado atualizado pela thread bg)
+            deadline = time.time() + 5.0
+            phase_antes = estado.get('phase')
+            needs_antes = h.get('needs')
+            while time.time() < deadline:
+                _estado_ev.wait(timeout=0.3)
+                _estado_ev.clear()
+                novo = _get_estado_bg()
+                if novo:
+                    # Sai do loop se o estado mudou (jogada processada)
+                    h_novo = novo.get('hand') or {}
+                    if (novo.get('phase') != phase_antes or
+                            h_novo.get('needs') != needs_antes):
+                        estado = novo
+                        break
 
     sock.close()
+    print("[NET] Encerrado.")
 
 
 if __name__ == '__main__':
