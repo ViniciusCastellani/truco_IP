@@ -1,505 +1,345 @@
 #!/usr/bin/env python3
-"""
-Truco Paulista — Jogador 1 (HOST)
-"""
+"""Truco Paulista — Jogador 1 (HOST)"""
 
-import socket, json, time, os, threading
+import socket, json, time, os, threading, copy
 import truco_game as tg
 
-PLAYER_ID   = 'p1'
-OPPONENT_ID = 'p2'
+PID, OID = 'p1', 'p2'
+PORT = 5000
 
-HOST_PORT = 5000
-HOST_BIND = '0.0.0.0'
+# ── Tabela de substituição ────────────────────────────────────────────────────
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  RSA
-# ══════════════════════════════════════════════════════════════════════════════
+CHAVE_CRIPTO = {
+    "A": 29, "B": 49, "C": 58, "D": 72, "E": 13,
+    "F": 28, "G": 48, "H": 57, "I": 71, "J": 12,
+    "K": 27, "L": 47, "M": 56, "N": 70, "O": 11,
+    "P": 26, "Q": 46, "R": 55, "S": 69, "T": 10,
+    "U": 25, "V": 45, "W": 24, "X": 54, "Y": 68, "Z":  9,
 
-CHAVE_PUBLICA  = [29, 247]
-CHAVE_PRIVADA  = [149, 247]
+    "a": 19, "b": 34, "c": 40, "d": 63, "e":  4,
+    "f": 18, "g": 33, "h": 39, "i": 62, "j":  3,
+    "k": 17, "l": 32, "m": 38, "n": 61, "o":  2,
+    "p": 16, "q": 31, "r": 37, "s": 60, "t":  1,
+    "u": 15, "v": 30, "w": 14, "x": 36, "y": 59,
+    "z":  0,
 
-def _egcd(a, b):
-    if a == 0: return b, 0, 1
-    g, x, y = _egcd(b % a, a)
-    return g, y - (b // a) * x, x
+    "0": 51, "1": 65, "2":  6, "3": 21, "4": 41,
+    "5": 50, "6": 64, "7":  5, "8": 20, "9": 35,
 
-def criptografar(mensagem: str, chave: list) -> list:
-    e, n = chave
-    resultado = []
-    for ch in mensagem:
-        code = ord(ch)
-        if code >= n:
-            resultado.append(n)
-            resultado.append(code // n)
-            resultado.append(code % n)
-        else:
-            resultado.append(pow(code, e, n))
-    return resultado
+    ".": 44, ",": 53, "!": 67, "?":  8,
+    "$": 23, "#": 43, "%": 52, "*": 66,
+    "+":  7, "-": 22, "/": 42,
+    " ": 73, ";": 74,
 
-def descriptografar(cifrado: list, chave: list) -> str:
-    d, n = chave
-    resultado = []
-    i = 0
-    while i < len(cifrado):
-        val = cifrado[i]
-        if val == n:
-            code = cifrado[i+1] * n + cifrado[i+2]
-            resultado.append(chr(code))
-            i += 3
-        else:
-            resultado.append(chr(pow(val, d, n)))
-            i += 1
-    return ''.join(resultado)
+    # JSON
+    "{": 75, "}": 76, "[": 77, "]": 78,
+    ":": 79, '"': 80, "_": 81,
 
-def _empacotar(dados: dict) -> bytes:
-    texto   = json.dumps(dados, ensure_ascii=True)
-    cifrado = criptografar(texto, CHAVE_PUBLICA)
-    return json.dumps(cifrado).encode('utf-8')
+    # Naipes
+    "♣": 82, "♥": 83, "♠": 84, "♦": 85,
+}
 
-def _desempacotar(raw: bytes) -> dict:
-    cifrado = json.loads(raw.decode('utf-8'))
-    texto   = descriptografar(cifrado, CHAVE_PRIVADA)
-    return json.loads(texto)
+CHAVE_DECRIPTO = {v: k for k, v in CHAVE_CRIPTO.items()}
+TAMANHO_BLOCO  = 5
 
+# ── RSA ───────────────────────────────────────────────────────────────────────
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  ESTADO COMPARTILHADO
-# ══════════════════════════════════════════════════════════════════════════════
+def eh_primo(num):
+    if num < 2: return False
+    for i in range(2, int(num**0.5) + 1):
+        if num % i == 0: return False
+    return True
 
-_lock        = threading.Lock()
-_estado      = tg.new_game()
-_addr_p2     = None
-_estado_novo = threading.Event()
+def gerar_primos(limite):
+    return [i for i in range(2, limite) if eh_primo(i)]
 
+def gerar_chaves_rsa():
+    """Gera par de chaves RSA interativamente. Retorna (chave_publica, chave_privada)."""
+    LIMITE       = 1000
+    VAL_MAX_TAB  = max(CHAVE_CRIPTO.values())   # 85
+    lista_primos = gerar_primos(LIMITE)
+    print(f'\n  Primos disponíveis (até {LIMITE}):\n  {lista_primos}\n')
 
-def _get_estado():
-    with _lock:
-        import copy
-        return copy.deepcopy(_estado)
+    while True:
+        try:
+            p = int(input('  Primeiro primo (P): '))
+            q = int(input('  Segundo primo  (Q): '))
+        except ValueError: print('  Digite inteiros.'); continue
+        if p not in lista_primos or q not in lista_primos:
+            print('  P e Q devem ser primos da lista.'); continue
+        if p == q:
+            print('  P e Q precisam ser diferentes.'); continue
+        if p * q <= VAL_MAX_TAB:
+            print(f'  P×Q = {p*q} deve ser > {VAL_MAX_TAB} (maior valor da tabela).'); continue
+        break
 
-def _set_estado(novo):
-    global _estado
-    with _lock:
-        _estado = novo
-    _estado_novo.set()
+    n        = p * q
+    totiente = (p - 1) * (q - 1)
+    print(f'\n  N (módulo) = {n}   totiente = {totiente}')
 
+    candidatos_e = [x for x in gerar_primos(totiente) if x > q]
+    print(f'\n  Candidatos para E (primo > Q={q}):\n  {candidatos_e[:30]}{"..." if len(candidatos_e)>30 else ""}\n')
+    while True:
+        try:
+            e = int(input('  E: '))
+            if e in candidatos_e: break
+            print('  E deve estar na lista.')
+        except ValueError: print('  Digite um inteiro.')
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  PROTOCOLO
-# ══════════════════════════════════════════════════════════════════════════════
+    # Calcular D: menor inteiro tal que (e * d) % totiente == 1
+    d = 1
+    while (e * d) % totiente != 1: d += 1
 
-def _estado_para_msg(st, tipo, dados_extras=None):
-    h = st.get('hand') or {}
-    return {
-        "tipo_msg":     tipo,
-        "vez":          h.get('needs') or h.get('turn') or 'p1',
-        "vira":         h.get('vira'),
-        "valor_rodada": h.get('stake', 1),
-        "mesa": {
-            "p1": h.get('table', {}).get('p1'),
-            "p2": h.get('table', {}).get('p2'),
-        },
-        "pontos": {
-            "p1": st['scores']['p1'],
-            "p2": st['scores']['p2'],
-        },
-        "qtd_cartas": {
-            "p1": len(h.get('cards', {}).get('p1', [])),
-            "p2": len(h.get('cards', {}).get('p2', [])),
-        },
-        "dados_extras":  dados_extras or {},
-        "_phase":        st.get('phase'),
-        "_message":      st.get('message', ''),
-        "_hand":         h,
-        "_winner":       st.get('winner'),
-        "_dealer":       st.get('dealer'),
-    }
+    pub  = [e, n]
+    priv = [d, n]
+    print(f'\n  Chave pública  [E, N] = {pub}')
+    print(f'  Chave privada  [D, N] = {priv}')
+    return pub, priv
 
+# ── Chaves pré-configuradas (opcional) ──────────────────────────────────────
+# Preencha os valores abaixo para pular a geração interativa de chaves.
+# Deixe None para gerar as chaves ao iniciar o programa.
+#
+# Exemplo:
+#   CHAVE_PUBLICA_P1  = [17, 143]   # [E, N]
+#   CHAVE_PRIVADA_P1  = [113, 143]  # [D, N]
 
-def _enviar(sock, addr, dados):
-    try:
-        packed = _empacotar(dados)
-        sock.sendto(packed, addr)
-    except Exception as ex:
-        print(f"[ERRO REDE] Falha ao enviar para {addr}: {ex}")
+CHAVE_PUBLICA_P1  = None   # [E, N] — preencha ou deixe None para gerar
+CHAVE_PRIVADA_P1  = None   # [D, N] — preencha ou deixe None para gerar
 
+# Preenchidos em runtime (não edite)
+_chave_pub_local   = None
+_chave_priv_local  = None
+_chave_pub_remota  = None   # chave pública de p2 (recebida no handshake)
 
-def _broadcast(sock, addr_p2, st, tipo, dados_extras=None):
-    if addr_p2:
-        _enviar(sock, addr_p2, _estado_para_msg(st, tipo, dados_extras))
+def set_chave_pub_remota(pub):
+    global _chave_pub_remota
+    _chave_pub_remota = pub
 
+def criptografar_rsa(msg, chave_publica):
+    e, n = chave_publica
+    return ''.join(f'{pow(CHAVE_CRIPTO[ch], e, n):05d}' for ch in msg)
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  THREAD DO SERVIDOR
-# ══════════════════════════════════════════════════════════════════════════════
+def descriptografar_rsa(txt, chave_privada):
+    d, n = chave_privada; out = []
+    for i in range(0, len(txt), TAMANHO_BLOCO):
+        val = pow(int(txt[i:i+TAMANHO_BLOCO]), d, n)
+        out.append(CHAVE_DECRIPTO[val])
+    return ''.join(out)
 
-def _thread_servidor(sock):
-    global _addr_p2
+def pack(d):
+    return criptografar_rsa(json.dumps(d, ensure_ascii=False), _chave_pub_remota).encode()
 
-    print(f"[NET] Aguardando Jogador 2 na porta {HOST_PORT}...")
+def unpack(b):
+    return json.loads(descriptografar_rsa(b.decode(), _chave_priv_local))
 
-    # ── Fase de conexão ──────────────────────────────────────────────────────
-    while _addr_p2 is None:
+# ── Estado compartilhado ──────────────────────────────────────────────────────
+
+_lock = threading.Lock()
+_st   = tg.new_game()
+_addr = None
+_ev   = threading.Event()
+
+def get_st():
+    with _lock: return copy.deepcopy(_st)
+
+def set_st(s):
+    global _st
+    with _lock: _st = s
+    _ev.set()
+
+# ── Rede ──────────────────────────────────────────────────────────────────────
+
+def send(sock, addr, data):
+    try: sock.sendto(pack(data), addr)
+    except Exception as e: print(f'[SEND ERR] {e}')
+
+def bcast(sock, st, tipo='ESTADO'):
+    if _addr: send(sock, _addr, {'t': tipo, 'st': st})
+
+# ── Thread do servidor ────────────────────────────────────────────────────────
+
+def server(sock):
+    global _addr
+    print(f'[NET] Aguardando p2 na porta {PORT}...')
+
+    # ── Handshake com troca de chaves RSA ────────────────────────────────────
+    # Fase 1: receber INICIO de p2 (texto puro — chaves ainda não trocadas)
+    while _addr is None:
         sock.settimeout(1.0)
-        try:
-            raw, addr = sock.recvfrom(65535)
-        except socket.timeout:
-            continue
-        except Exception as ex:
-            print(f"[ERRO RECV] {ex}")
-            continue
+        try: raw, addr = sock.recvfrom(65535)
+        except socket.timeout: continue
+        try: d = json.loads(raw.decode())           # sem cifra ainda
+        except: continue
+        if d.get('t') == 'INICIO':
+            _addr = addr
+            print(f'[NET] p2 conectado: {addr}')
+            # Fase 2: enviar chave pública de p1 (texto puro)
+            sock.sendto(json.dumps({'t':'CHAVE','pub':_chave_pub_local}).encode(), addr)
+            print(f'[NET] Chave pública de p1 enviada: {_chave_pub_local}')
 
-        try:
-            dados = _desempacotar(raw)
-        except Exception as ex:
-            print(f"[ERRO CRIPTO] Pacote de {addr} não pôde ser lido: {ex}")
-            continue
+    # Fase 3: receber chave pública de p2 (texto puro)
+    print('[NET] Aguardando chave pública de p2...')
+    while _chave_pub_remota is None:
+        sock.settimeout(1.0)
+        try: raw, addr = sock.recvfrom(65535)
+        except socket.timeout: continue
+        if addr != _addr: continue
+        try: d = json.loads(raw.decode())
+        except: continue
+        if d.get('t') == 'CHAVE' and 'pub' in d:
+            set_chave_pub_remota(d['pub'])
+            print(f'[NET] Chave pública de p2 recebida: {_chave_pub_remota}')
+            # Fase 4: confirmar handshake — agora com cifra RSA
+            send(sock, _addr, {'t':'INICIO','ok':True})
+            print('[NET] Handshake concluído — comunicação cifrada iniciada.')
 
-        print(f"[DEBUG] Pacote recebido de {addr}: tipo={dados.get('tipo_msg')} vez={dados.get('vez')}")
+    st = tg.start_hand(get_st())
+    set_st(st); bcast(sock, st)
+    print(f'[JOGO] Partida iniciada. Vira: {tg.label(st["hand"]["vira"])}')
 
-        if dados.get('tipo_msg') == 'INICIO' and dados.get('vez') == 'p2':
-            _addr_p2 = addr
-            print(f"[JOGO] Jogador 2 conectado de {addr}")
-
-            ack = {
-                "tipo_msg": "INICIO", "vez": "p2",
-                "vira": None, "valor_rodada": 1,
-                "mesa": {"p1": None, "p2": None},
-                "pontos": {"p1": 0, "p2": 0},
-                "qtd_cartas": {"p1": 0, "p2": 0},
-                "dados_extras": {"status": "conectado", "aguardando": False},
-                "_phase": "waiting",
-                "_message": "p2 conectado! Iniciando...",
-                "_hand": None, "_winner": None, "_dealer": "p1",
-            }
-            for _ in range(3):
-                _enviar(sock, addr, ack)
-                time.sleep(0.05)
-
-    # ── Iniciar partida ──────────────────────────────────────────────────────
-    st = _get_estado()
-    st['phase'] = 'ready'
-    st = tg.start_hand(st)
-    _set_estado(st)
-    for _ in range(3):
-        _broadcast(sock, _addr_p2, st, 'ESTADO')
-        time.sleep(0.1)
-    print(f"[JOGO] Partida iniciada! Vira: {tg.label(st['hand']['vira'])}")
-
-    # ── Loop principal do servidor ───────────────────────────────────────────
     while True:
         sock.settimeout(0.2)
-        try:
-            raw, addr = sock.recvfrom(65535)
-        except socket.timeout:
-            continue
-        except Exception as ex:
-            print(f"[ERRO RECV] {ex}")
-            continue
+        try: raw, addr = sock.recvfrom(65535)
+        except socket.timeout: continue
+        if addr != _addr: continue
+        try: d = unpack(raw)
+        except: continue
+        if d.get('t') != 'ACAO': continue
 
-        if addr != _addr_p2:
-            continue
+        st = get_st(); h = st.get('hand') or {}; a = d.get('a')
 
-        try:
-            dados = _desempacotar(raw)
-        except Exception as ex:
-            print(f"[ERRO CRIPTO] {ex}")
-            continue
+        if   a=='play'       and h.get('needs')==OID: st,_ = tg.play_card(st, OID, d['idx'])
+        elif a=='truco':                               st,_ = tg.call_truco(st, OID, d['nivel'])
+        elif a=='resp_truco':                          st,_ = tg.respond_truco(st, OID, d['aceitar'])
+        elif a=='mao11':                               st,_ = tg.mao11_decide(st, OID, d['jogar'])
+        else: continue
 
-        tipo  = dados.get('tipo_msg')
-        pid   = dados.get('vez')
-        st    = _get_estado()
-        phase = st.get('phase')
-        h     = st.get('hand') or {}
+        set_st(st)
+        bcast(sock, st, 'FIM' if st['phase']=='game_over' else 'ESTADO')
+        if st['phase'] == 'game_over': break
 
-        if tipo == 'JOGADA' and pid == 'p2':
-            extras = dados.get('dados_extras', {})
-            acao   = extras.get('acao')
+    print('[NET] Thread servidor encerrada.')
 
-            if acao == 'JOGAR_CARTA':
-                if h.get('needs') != 'p2':
-                    continue
-                st, msg = tg.play_card(st, 'p2', extras.get('idx'))
-                _set_estado(st)
-                _broadcast(sock, _addr_p2, st, 'JOGADA', {"resultado": msg})
+# ── Display ───────────────────────────────────────────────────────────────────
 
-            elif acao == 'TRUCO':
-                st, msg = tg.call_truco(st, 'p2', extras.get('nivel'))
-                _set_estado(st)
-                _broadcast(sock, _addr_p2, st, 'TRUCO', {"acao": "TRUCO", "nivel": extras.get('nivel')})
-
-            elif acao == 'RESPONDER_TRUCO':
-                st, msg = tg.respond_truco(st, 'p2', extras.get('aceitar'))
-                _set_estado(st)
-                _broadcast(sock, _addr_p2, st, 'TRUCO', {"acao": "RESPOSTA", "aceitar": extras.get('aceitar'), "resultado": msg})
-
-            elif acao == 'MAO11':
-                st, msg = tg.mao11_decide(st, 'p2', extras.get('jogar'))
-                _set_estado(st)
-                _broadcast(sock, _addr_p2, st, 'ESTADO', {"acao": "MAO11", "resultado": msg})
-
-            if st['phase'] == 'hand_over':
-                _broadcast(sock, _addr_p2, st, 'ESTADO', {"evento": "mao_encerrada"})
-            elif st['phase'] == 'game_over':
-                _broadcast(sock, _addr_p2, st, 'FIM', {"vencedor": st['winner']})
-                break
-
-        elif tipo == 'ESTADO' and dados.get('dados_extras', {}).get('acao') == 'PROXIMA_MAO':
-            # FIX: não chama start_hand aqui — P1 é o único que controla o
-            # início da próxima mão (loop principal). Apenas reenvia o estado
-            # atual para P2 sincronizar caso ele ainda esteja esperando.
-            st = _get_estado()
-            _broadcast(sock, _addr_p2, st, 'ESTADO', {"evento": "sync_mao"})
-
-        elif tipo == 'ESTADO':
-            _broadcast(sock, _addr_p2, st, 'ESTADO')
-
-    print("[NET] Thread servidor encerrada.")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  DISPLAY
-# ══════════════════════════════════════════════════════════════════════════════
-
-def clr():
-    os.system('clear' if os.name != 'nt' else 'cls')
-
-def card_str(c):
-    return f'[{tg.label(c)}]' if c else '[ - ]'
+def clr(): os.system('clear' if os.name != 'nt' else 'cls')
+def card_s(c): return f'[{tg.label(c)}]' if c else '[ - ]'
 
 def draw(st):
-    clr()
-    sc    = st['scores']
-    phase = st['phase']
-    you   = PLAYER_ID
-    adv   = OPPONENT_ID
+    clr(); sc = st['scores']; h = st.get('hand')
+    sep = '─'*50
+    print(sep)
+    print(f'  TRUCO PAULISTA [HOST/p1]   Placar: p1={sc["p1"]}  p2={sc["p2"]}')
+    print(sep)
+    if not h: print(f'\n  {st.get("message","")}'); return
+    print(f'  Vira: {tg.label(h["vira"])}   Manilha: {tg.manilha_str(h["vira"])}')
+    if h['rodadas']:
+        print('\n  Rodadas:')
+        for i,r in enumerate(h['rodadas'],1):
+            w = 'você' if r['winner']==PID else ('adv' if r['winner']==OID else 'empate')
+            print(f'    {i}. {tg.label(r[PID])} vs {tg.label(r[OID])} → {w}')
+    print(f'\n  Mesa:  Adv: {card_s(h["table"].get(OID))}   Você: {card_s(h["table"].get(PID))}')
+    slabel = h['truco_level'].upper() if h.get('truco_level') else 'normal'
+    print(f'  Aposta: {slabel} ({h["stake"]}pt)')
+    if st['phase']=='truco' and h.get('truco_caller')==OID:
+        print(f'  !!! {OID} pediu {h["truco_pending"].upper()}! ({tg.STAKES[h["truco_pending"]]}pts) !!!')
+    cards = h['cards'].get(PID, [])
+    print('\n  ' + ('  '.join(f'[{i+1}]{tg.label(c)}' for i,c in enumerate(cards)) or '(nenhuma)'))
+    print(f'  {OID} tem {len(h["cards"].get(OID,[]))} carta(s).')
+    print(f'\n  >> {st.get("message","")}')
 
-    SEP = '─' * 50
-    print(SEP)
-    print(f'  TRUCO PAULISTA  [HOST/p1]     Você: {you}')
-    print(f'  Placar:  p1 = {sc["p1"]:2}    p2 = {sc["p2"]:2}')
-    print(SEP)
-
-    h = st.get('hand')
-    if not h:
-        print(f'\n  {st.get("message", "")}')
-        return
-
-    vira = h['vira']
-    print(f'  Vira: {tg.label(vira)}   Manilha: {tg.manilha_str(vira)}')
-    print(SEP)
-
-    if h.get('rodadas'):
-        print('\n  Rodadas jogadas:')
-        for i, r in enumerate(h['rodadas'], 1):
-            mark = 'você' if r['winner'] == you else ('adv' if r['winner'] == adv else 'empate')
-            print(f'    {i}. {tg.label(r[you])} vs {tg.label(r[adv])}  →  {mark}')
-
-    print('\n  Mesa:')
-    print(f'    Adv ({adv}):   {card_str(h["table"].get(adv))}')
-    print(f'    Você ({you}):  {card_str(h["table"].get(you))}')
-
-    stake_label = h["truco_level"].upper() if h.get("truco_level") else "normal"
-    print(f'\n  Aposta: {stake_label} ({h["stake"]} pt(s))')
-    if phase == 'truco' and h.get('truco_caller') == adv:
-        print(f'  !!! {adv} pediu {h["truco_pending"].upper()}! ({tg.STAKES[h["truco_pending"]]} pts) !!!')
-
-    cards = h['cards'].get(you, [])
-    print()
-    if cards:
-        parts = '   '.join(f'[{i+1}] {tg.label(c)}' for i, c in enumerate(cards))
-        print(f'  Suas cartas: {parts}')
-    else:
-        print('  Suas cartas: (nenhuma)')
-
-    opp_count = len(h['cards'].get(adv, []))
-    print(f'  {adv} tem {opp_count} carta(s) na mão.')
-    print(f'\n  >> {st.get("message", "")}')
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  INPUT
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Input ─────────────────────────────────────────────────────────────────────
 
 def get_action(st):
-    h     = st['hand']
-    phase = st['phase']
-
-    if phase == 'mao11' and h.get('needs') == PLAYER_ID:
-        print('\n  Mão de Onze — veja suas cartas e decida:')
-        print('  [j] Jogar   [f] Fugir')
+    h = st['hand']; phase = st['phase']
+    if phase=='mao11' and h.get('needs')==PID:
+        print('\n  Mão de Onze: [j] Jogar  [f] Fugir')
         while True:
             r = input('  > ').strip().lower()
-            if r == 'j': return ('mao11', True)
-            if r == 'f': return ('mao11', False)
-
-    if phase == 'truco' and h.get('needs') == PLAYER_ID:
-        nxt  = tg.next_truco_level(h)
-        opts = '[a] Aceitar   [c] Correr'
-        if nxt:
-            opts += f'   [r] Aumentar → {nxt.upper()} ({tg.STAKES[nxt]} pts)'
-        print(f'\n  {opts}')
+            if r=='j': return ('mao11', True)
+            if r=='f': return ('mao11', False)
+    if phase=='truco' and h.get('needs')==PID:
+        nxt = tg.next_truco_level(h)
+        print('\n  [a] Aceitar  [c] Correr' + (f'  [r] → {nxt.upper()}({tg.STAKES[nxt]}pt)' if nxt else ''))
         while True:
             r = input('  > ').strip().lower()
-            if r == 'a': return ('respond', True)
-            if r == 'c': return ('respond', False)
-            if r == 'r' and nxt: return ('call_truco', nxt)
-
-    if phase == 'playing' and h.get('needs') == PLAYER_ID:
-        cards   = h['cards'][PLAYER_ID]
-        n       = len(cards)
-        nxt_tru = tg.next_truco_level(h)
-        opts    = f'  Jogar: [1-{n}]'
-        if nxt_tru:
-            opts += f'   Truco: [t] → {nxt_tru.upper()} ({tg.STAKES[nxt_tru]} pts)'
-        print(f'\n{opts}')
+            if r=='a': return ('respond', True)
+            if r=='c': return ('respond', False)
+            if r=='r' and nxt: return ('call_truco', nxt)
+    if phase=='playing' and h.get('needs')==PID:
+        cards = h['cards'][PID]; n = len(cards); nxt = tg.next_truco_level(h)
+        print(f'\n  Jogar:[1-{n}]' + (f'  Truco:[t]→{nxt.upper()}' if nxt else ''))
         while True:
             r = input('  > ').strip().lower()
             if r.isdigit():
-                idx = int(r) - 1
-                if 0 <= idx < n:
-                    return ('play', idx)
-                print(f'  Escolha entre 1 e {n}.')
-            elif r == 't' and nxt_tru:
-                return ('call_truco', nxt_tru)
-
+                idx = int(r)-1
+                if 0 <= idx < n: return ('play', idx)
+            elif r=='t' and nxt: return ('call_truco', nxt)
     return None
 
+# ── Aplica ação do P1 ─────────────────────────────────────────────────────────
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  APLICA JOGADA DO P1 LOCALMENTE
-# ══════════════════════════════════════════════════════════════════════════════
+def apply_p1(action, sock):
+    st = get_st(); k = action[0]
+    if   k=='play':        st,_ = tg.play_card(st, PID, action[1])
+    elif k=='call_truco':  st,_ = tg.call_truco(st, PID, action[1])
+    elif k=='respond':     st,_ = tg.respond_truco(st, PID, action[1])
+    elif k=='mao11':       st,_ = tg.mao11_decide(st, PID, action[1])
+    set_st(st)
+    bcast(sock, st, 'FIM' if st['phase']=='game_over' else 'ESTADO')
 
-def aplicar_acao_p1(action, sock):
-    st    = _get_estado()
-    h     = st['hand'] or {}
-    kind  = action[0]
-
-    msg = ''
-    if kind == 'play':
-        if h.get('needs') != PLAYER_ID:
-            return
-        st, msg = tg.play_card(st, PLAYER_ID, action[1])
-        _set_estado(st)
-        _broadcast(sock, _addr_p2, st, 'JOGADA', {"resultado": msg})
-
-    elif kind == 'call_truco':
-        st, msg = tg.call_truco(st, PLAYER_ID, action[1])
-        _set_estado(st)
-        _broadcast(sock, _addr_p2, st, 'TRUCO', {"acao": "TRUCO", "nivel": action[1]})
-
-    elif kind == 'respond':
-        st, msg = tg.respond_truco(st, PLAYER_ID, action[1])
-        _set_estado(st)
-        _broadcast(sock, _addr_p2, st, 'TRUCO', {"acao": "RESPOSTA", "aceitar": action[1], "resultado": msg})
-
-    elif kind == 'mao11':
-        st, msg = tg.mao11_decide(st, PLAYER_ID, action[1])
-        _set_estado(st)
-        _broadcast(sock, _addr_p2, st, 'ESTADO', {"acao": "MAO11", "resultado": msg})
-
-    if msg:
-        print(f"[JOGO] {msg}")
-
-    st = _get_estado()
-    if st['phase'] == 'hand_over':
-        _broadcast(sock, _addr_p2, st, 'ESTADO', {"evento": "mao_encerrada"})
-    elif st['phase'] == 'game_over':
-        _broadcast(sock, _addr_p2, st, 'FIM', {"vencedor": st['winner']})
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  MAIN
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _get_local_ip():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "127.0.0.1"
-
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    global _chave_pub_local, _chave_priv_local
     clr()
-    print("=" * 52)
-    print("  TRUCO PAULISTA — Jogador 1 [HOST]")
-    print("=" * 52)
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80)); ip = s.getsockname()[0]; s.close()
+    except: ip = "127.0.0.1"
+    print(f'  IP: {ip}   Porta: {PORT}\n  Passe esse IP para o Jogador 2.\n')
 
-    ip_local = _get_local_ip()
-    print(f"\n  Seu IP na rede: {ip_local}")
-    print(f"  Porta:          {HOST_PORT}")
-    print(f"\n  Passe para o Jogador 2:")
-    print(f"  → IP: {ip_local}   Porta: {HOST_PORT}")
-    print(f"\n  ⚠️  Verifique se o firewall permite UDP na porta {HOST_PORT}")
-    print(f"     Linux:   sudo ufw allow {HOST_PORT}/udp")
-    print(f"     Windows: netsh advfirewall firewall add rule name=Truco protocol=UDP dir=in localport={HOST_PORT} action=allow\n")
+    if CHAVE_PUBLICA_P1 and CHAVE_PRIVADA_P1:
+        _chave_pub_local  = CHAVE_PUBLICA_P1
+        _chave_priv_local = CHAVE_PRIVADA_P1
+        print(f'  Chave pública  [E, N] = {_chave_pub_local}')
+        print(f'  Chave privada  [D, N] = {_chave_priv_local}')
+    else:
+        print('  === GERAÇÃO DAS CHAVES RSA (Jogador 1) ===')
+        _chave_pub_local, _chave_priv_local = gerar_chaves_rsa()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind((HOST_BIND, HOST_PORT))
-    print(f"[NET] Socket UDP vinculado em {HOST_BIND}:{HOST_PORT} ✓\n")
+    sock.bind(('0.0.0.0', PORT))
+    threading.Thread(target=server, args=(sock,), daemon=True).start()
 
-    t = threading.Thread(target=_thread_servidor, args=(sock,), daemon=True)
-    t.start()
-
-    print("[JOGO] Aguardando Jogador 2 conectar...\n")
-    while _addr_p2 is None:
-        time.sleep(0.3)
+    while _addr is None: time.sleep(0.2)
+    while _chave_pub_remota is None: time.sleep(0.2)   # aguarda handshake completo
+    while get_st().get('phase') in ('waiting','ready',None): time.sleep(0.2)
 
     while True:
-        st = _get_estado()
-        if st.get('phase') not in ('waiting', 'ready', None):
-            break
-        time.sleep(0.2)
-
-    # ── Loop principal do Jogador 1 ──────────────────────────────────────────
-    while True:
-        _estado_novo.wait(timeout=0.5)
-        _estado_novo.clear()
-
-        st    = _get_estado()
-        phase = st.get('phase', '')
-
+        _ev.wait(0.5); _ev.clear()
+        st = get_st(); phase = st.get('phase','')
         draw(st)
 
         if phase == 'game_over':
             w = st.get('winner')
-            print(f'\n  JOGO ENCERRADO! {"VOCÊ VENCEU! 🎉" if w == PLAYER_ID else "Você perdeu."}')
+            print(f'\n  FIM! {"VOCÊ VENCEU! 🎉" if w==PID else "Você perdeu."}')
             print(f'  Placar final: p1 {st["scores"]["p1"]} × {st["scores"]["p2"]} p2')
             break
 
         if phase == 'hand_over':
-            input('\n  [Enter] para iniciar próxima mão...')
-            # FIX: somente P1 chama start_hand. A thread do servidor não o faz
-            # mais, evitando o double-shuffle que causava dessincronia.
-            st = tg.start_hand(_get_estado())
-            _set_estado(st)
-            # Envia múltiplas vezes para garantir que P2 receba o novo estado
-            for _ in range(3):
-                _broadcast(sock, _addr_p2, st, 'ESTADO', {"evento": "nova_mao"})
-                time.sleep(0.05)
-            continue
+            input('\n  [Enter] próxima mão...')
+            st = tg.start_hand(get_st()); set_st(st)
+            bcast(sock, st); continue
 
         h = st.get('hand')
-        if not h:
-            continue
+        if not h or h.get('needs') != PID: continue
 
-        needs_me = (h.get('needs') == PLAYER_ID)
-        if not needs_me:
-            continue
-
-        action = get_action(st)
-        if action:
-            aplicar_acao_p1(action, sock)
+        a = get_action(st)
+        if a: apply_p1(a, sock)
 
     sock.close()
-    print("[NET] Encerrado.")
 
-
-if __name__ == '__main__':
-    main()
+if __name__ == '__main__': main()
