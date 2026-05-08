@@ -13,7 +13,7 @@ O Jogador 2 deve rodar player_2_client.py apontando para o IP desta máquina.
 """
 
 import socket, json, time, os, threading
-import truco_game_bak2 as tg
+import truco_game as tg
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  CONFIGURAÇÃO

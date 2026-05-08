@@ -10,7 +10,7 @@ Uso:
 """
 
 import socket, json, time, os
-import truco_game_bak2 as tg
+import truco_game as tg
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  CONFIGURAÇÃO
