@@ -37,6 +37,9 @@ CHAVE_CRIPTO = {
 
     # Naipes
     "♣": 82, "♥": 83, "♠": 84, "♦": 85,
+
+    # Escape unicode (\uXXXX gerado por ensure_ascii=True)
+    "\\": 86,
 }
 
 CHAVE_DECRIPTO = {v: k for k, v in CHAVE_CRIPTO.items()}
@@ -104,8 +107,8 @@ def gerar_chaves_rsa():
 #   CHAVE_PUBLICA_P2  = [31, 323]   # [E, N]
 #   CHAVE_PRIVADA_P2  = [223, 323]  # [D, N]
 
-CHAVE_PUBLICA_P2  = None   # [E, N] — preencha ou deixe None para gerar
-CHAVE_PRIVADA_P2  = None   # [D, N] — preencha ou deixe None para gerar
+CHAVE_PUBLICA_P2  = [37, 899]   # [E, N] — preencha ou deixe None para gerar
+CHAVE_PRIVADA_P2  = [613, 899]   # [D, N] — preencha ou deixe None para gerar
 
 # Preenchidos em runtime (não edite)
 _chave_pub_local   = None
@@ -128,7 +131,7 @@ def descriptografar_rsa(txt, chave_privada):
     return ''.join(out)
 
 def pack(d):
-    return criptografar_rsa(json.dumps(d, ensure_ascii=False), _chave_pub_remota).encode()
+    return criptografar_rsa(json.dumps(d, ensure_ascii=True), _chave_pub_remota).encode()
 
 def unpack(b):
     return json.loads(descriptografar_rsa(b.decode(), _chave_priv_local))
@@ -273,8 +276,10 @@ def main():
 
     threading.Thread(target=recv_thread, args=(sock,), daemon=True).start()
 
+    # Fase 4: sinalizar ao servidor que recv_thread está ativo (SYNC)
     print('[JOGO] Aguardando partida...')
     while True:
+        send(sock, srv, {'t':'SYNC'})
         _ev.wait(1.0); _ev.clear()
         st = get_st()
         if st and st.get('phase') not in ('waiting','ready',None): break

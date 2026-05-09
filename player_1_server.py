@@ -37,6 +37,9 @@ CHAVE_CRIPTO = {
 
     # Naipes
     "♣": 82, "♥": 83, "♠": 84, "♦": 85,
+
+    # Escape unicode (\uXXXX gerado por ensure_ascii=True)
+    "\\": 86,
 }
 
 CHAVE_DECRIPTO = {v: k for k, v in CHAVE_CRIPTO.items()}
@@ -104,8 +107,8 @@ def gerar_chaves_rsa():
 #   CHAVE_PUBLICA_P1  = [17, 143]   # [E, N]
 #   CHAVE_PRIVADA_P1  = [113, 143]  # [D, N]
 
-CHAVE_PUBLICA_P1  = None   # [E, N] — preencha ou deixe None para gerar
-CHAVE_PRIVADA_P1  = None   # [D, N] — preencha ou deixe None para gerar
+CHAVE_PUBLICA_P1  = [31, 551]   # [E, N] — preencha ou deixe None para gerar
+CHAVE_PRIVADA_P1  = [439, 551]  # [D, N] — preencha ou deixe None para gerar
 
 # Preenchidos em runtime (não edite)
 _chave_pub_local   = None
@@ -128,7 +131,7 @@ def descriptografar_rsa(txt, chave_privada):
     return ''.join(out)
 
 def pack(d):
-    return criptografar_rsa(json.dumps(d, ensure_ascii=False), _chave_pub_remota).encode()
+    return criptografar_rsa(json.dumps(d, ensure_ascii=True), _chave_pub_remota).encode()
 
 def unpack(b):
     return json.loads(descriptografar_rsa(b.decode(), _chave_priv_local))
@@ -194,6 +197,17 @@ def server(sock):
             send(sock, _addr, {'t':'INICIO','ok':True})
             print('[NET] Handshake concluído — comunicação cifrada iniciada.')
 
+    # Fase 5: aguardar SYNC do cliente (garante que recv_thread já está ativo)
+    print('[NET] Aguardando SYNC de p2...')
+    while True:
+        sock.settimeout(1.0)
+        try: raw, addr = sock.recvfrom(65535)
+        except socket.timeout: continue
+        if addr != _addr: continue
+        try: d = unpack(raw)
+        except: continue
+        if d.get('t') == 'SYNC': break
+
     st = tg.start_hand(get_st())
     set_st(st); bcast(sock, st)
     print(f'[JOGO] Partida iniciada. Vira: {tg.label(st["hand"]["vira"])}')
@@ -205,6 +219,7 @@ def server(sock):
         if addr != _addr: continue
         try: d = unpack(raw)
         except: continue
+        if d.get('t') == 'SYNC': bcast(sock, get_st()); continue
         if d.get('t') != 'ACAO': continue
 
         st = get_st(); h = st.get('hand') or {}; a = d.get('a')
