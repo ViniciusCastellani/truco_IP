@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-"""Truco Paulista — Jogador 2 (CLIENT)"""
-
 import socket
 import json
 import time
@@ -96,6 +93,10 @@ _evento          = threading.Event()
 # -------------------------------
 
 def eh_primo(numero):
+    """Retorna True se o número for primo, False caso contrário.
+
+    Testa divisibilidade de 2 até a raiz quadrada do número.
+    """
     if numero < 2:
         return False
 
@@ -107,6 +108,7 @@ def eh_primo(numero):
 
 
 def gerar_lista_primos(limite):
+    """Retorna uma lista com todos os números primos menores que limite."""
     lista = []
 
     for numero in range(2, limite):
@@ -121,6 +123,14 @@ def gerar_lista_primos(limite):
 # -------------------------------
 
 def escolher_p_e_q(lista_primos):
+    """Solicita ao usuário a escolha dos primos P e Q para o RSA.
+
+    Valida que ambos pertencem à lista de primos fornecida, são distintos
+    entre si e que P * Q é maior que o maior índice da tabela de
+    substituição, garantindo que todos os caracteres possam ser cifrados.
+
+    Retorna a tupla (p, q).
+    """
     VALOR_MAXIMO_TABELA = max(CHAVE_CRIPTO.values())
 
     print(f"\nPrimos disponíveis:\n{lista_primos}\n")
@@ -149,6 +159,13 @@ def escolher_p_e_q(lista_primos):
 
 
 def calcular_n_e_totiente(p, q):
+    """Calcula e exibe o módulo N e o totiente de Euler a partir de P e Q.
+
+    N = P * Q é o módulo público do RSA.
+    totiente = (P-1) * (Q-1) é usado para derivar os expoentes E e D.
+
+    Retorna a tupla (n, totiente).
+    """
     n        = p * q
     totiente = (p - 1) * (q - 1)
 
@@ -159,6 +176,13 @@ def calcular_n_e_totiente(p, q):
 
 
 def escolher_e(q, totiente):
+    """Solicita ao usuário a escolha do expoente público E.
+
+    Apresenta os candidatos válidos: primos maiores que Q e coprimos com
+    o totiente (mdc(E, totiente) = 1). Valida a escolha do usuário.
+
+    Retorna o valor de E escolhido.
+    """
     candidatos = [x for x in gerar_lista_primos(totiente) if x > q]
 
     print(f"\nCandidatos para E (primo > Q={q}):")
@@ -178,6 +202,13 @@ def escolher_e(q, totiente):
 
 
 def calcular_d(e, totiente):
+    """Calcula o expoente privado D por busca incremental.
+
+    Encontra D tal que (E * D) mod totiente == 1, satisfazendo a
+    condição de inverso modular necessária para o RSA.
+
+    Retorna o valor de D.
+    """
     d = 1
 
     while True:
@@ -187,6 +218,14 @@ def calcular_d(e, totiente):
 
 
 def gerar_chaves_rsa():
+    """Conduz o fluxo interativo completo de geração de chaves RSA.
+
+    Guia o usuário pela escolha de P, Q e E, calcula N, totiente e D, e
+    exibe as chaves resultantes no terminal.
+
+    Retorna a tupla (chave_publica, chave_privada), onde cada chave é
+    uma lista [expoente, modulo].
+    """
     LIMITE_PRIMOS = 1000
 
     lista_primos = gerar_lista_primos(LIMITE_PRIMOS)
@@ -210,6 +249,13 @@ def gerar_chaves_rsa():
 # -------------------------------
 
 def criptografar(texto, chave_publica):
+    """Cifra um texto usando RSA com a chave pública fornecida.
+
+    Para cada caractere do texto, consulta seu índice em CHAVE_CRIPTO,
+    aplica c = m^E mod N e formata o resultado como um bloco de 5 dígitos.
+
+    Retorna a string cifrada como concatenação de blocos de 5 dígitos.
+    """
     e, n    = chave_publica
     cifrado = ""
 
@@ -222,6 +268,14 @@ def criptografar(texto, chave_publica):
 
 
 def descriptografar(texto_cifrado, chave_privada):
+    """Decifra um texto cifrado usando RSA com a chave privada fornecida.
+
+    Segmenta o texto em blocos de TAMANHO_BLOCO dígitos, aplica
+    m = c^D mod N sobre cada bloco e consulta CHAVE_DECRIPTO para
+    recuperar o caractere original.
+
+    Retorna o texto original decifrado.
+    """
     d, n      = chave_privada
     decifrado = ""
 
@@ -235,12 +289,20 @@ def descriptografar(texto_cifrado, chave_privada):
 
 
 def empacotar(dados):
+    """Serializa um dicionário para JSON, cifra com a chave pública do adversário e codifica em bytes.
+
+    Retorna os bytes prontos para envio via socket UDP.
+    """
     texto_json    = json.dumps(dados, ensure_ascii=True)
     texto_cifrado = criptografar(texto_json, chave_publica_do_adv)
     return texto_cifrado.encode()
 
 
 def desempacotar(dados_brutos):
+    """Decodifica bytes recebidos, decifra com a chave privada local e desserializa o JSON.
+
+    Retorna o dicionário Python original da mensagem.
+    """
     texto_cifrado = dados_brutos.decode()
     texto_json    = descriptografar(texto_cifrado, minha_chave_privada)
     return json.loads(texto_json)
@@ -251,6 +313,7 @@ def desempacotar(dados_brutos):
 # -------------------------------
 
 def salvar_estado(novo_estado):
+    """Substitui o estado recebido pelo novo estado de forma thread-safe e sinaliza o evento."""
     global _estado_recebido
     with _lock_estado:
         _estado_recebido = novo_estado
@@ -258,6 +321,7 @@ def salvar_estado(novo_estado):
 
 
 def obter_estado():
+    """Retorna o último estado recebido do servidor de forma thread-safe."""
     with _lock_estado:
         return _estado_recebido
 
@@ -267,6 +331,10 @@ def obter_estado():
 # -------------------------------
 
 def enviar(sock, endereco, dados):
+    """Empacota e envia um dicionário de dados para o endereço UDP informado.
+
+    Em caso de erro no envio, exibe a mensagem de erro no terminal.
+    """
     try:
         sock.sendto(empacotar(dados), endereco)
     except Exception as erro:
@@ -274,6 +342,7 @@ def enviar(sock, endereco, dados):
 
 
 def definir_chave_publica_do_adv(chave):
+    """Armazena a chave pública recebida do adversário na variável global."""
     global chave_publica_do_adv
     chave_publica_do_adv = chave
 
@@ -283,6 +352,12 @@ def definir_chave_publica_do_adv(chave):
 # -------------------------------
 
 def thread_recepcao(sock):
+    """Thread responsável por receber e armazenar os estados enviados pelo Jogador 1.
+
+    Fica em loop aguardando pacotes UDP. Quando recebe uma mensagem com
+    o campo 'st', salva o estado via salvar_estado. Encerra ao receber
+    um OSError (socket fechado).
+    """
     while True:
         sock.settimeout(0.3)
         try:
@@ -306,6 +381,13 @@ def thread_recepcao(sock):
 # -------------------------------
 
 def realizar_handshake(sock, endereco_servidor):
+    """Executa o handshake de três fases do lado do Jogador 2.
+
+    Fase 1: envia mensagens INICIO repetidamente até receber a chave pública de p1.
+    Fase 2: envia a própria chave pública de p2 em texto plano.
+    Fase 3: aguarda a confirmação INICIO cifrada de p1, encerrando o handshake
+            e iniciando a comunicação criptografada.
+    """
     # Fase 1: enviar INICIO para p1 (sem cifra ainda)
     while True:
         sock.sendto(json.dumps({'t': 'INICIO'}).encode(), endereco_servidor)
@@ -336,6 +418,7 @@ def realizar_handshake(sock, endereco_servidor):
 
             if mensagem.get('t') == 'INICIO' and mensagem.get('ok'):
                 print("[REDE] Handshake concluído — comunicação cifrada iniciada!")
+                input("\n  [Pressione Enter para continuar...]\n")
                 break
 
         except socket.timeout:
@@ -348,16 +431,26 @@ def realizar_handshake(sock, endereco_servidor):
 # -------------------------------
 
 def limpar_tela():
+    """Limpa o terminal, compatível com sistemas Unix e Windows."""
     os.system('clear' if os.name != 'nt' else 'cls')
 
 
 def mostrar_carta(carta):
+    """Retorna a representação visual de uma carta para exibição na mesa.
+
+    Retorna '[valor+naipe]' se a carta existir, ou '[ - ]' se for None.
+    """
     if carta:
         return f"[{tg.nome_da_carta(carta)}]"
     return "[ - ]"
 
 
 def exibir_estado(estado):
+    """Renderiza no terminal o estado atual do jogo para o Jogador 2.
+
+    Exibe placar, carta vira, manilhas, histórico de rodadas, cartas na
+    mesa, aposta em vigor, cartas na mão e a mensagem de status atual.
+    """
     limpar_tela()
 
     pontos = estado['pontos']
@@ -423,6 +516,15 @@ def exibir_estado(estado):
 # -------------------------------
 
 def capturar_acao(estado):
+    """Lê e retorna a ação do Jogador 2 a partir da entrada do terminal.
+
+    Exibe o menu adequado conforme a fase e o turno atual:
+    - 'mao_de_onze': opções [j] Jogar / [f] Fugir.
+    - 'truco': opções [a] Aceitar / [c] Correr / [r] Aumentar.
+    - 'jogando': opções numéricas para jogar carta / [t] Pedir truco.
+
+    Retorna uma tupla (tipo_acao, argumento) ou None se não for a vez do jogador.
+    """
     mao  = estado['mao']
     fase = estado['fase']
 
@@ -489,6 +591,14 @@ def capturar_acao(estado):
 # -------------------------------
 
 def main():
+    """Ponto de entrada do Jogador 2 (cliente).
+
+    Carrega ou gera as chaves RSA, solicita o IP do servidor, cria o
+    socket UDP e realiza o handshake. Inicia a thread de recepção, aguarda
+    o início da partida via SYNC e entra no loop principal do jogo. O loop
+    exibe o estado, captura a ação do jogador, envia ao servidor e aguarda
+    a confirmação de atualização de estado. Encerra ao atingir 'fim_de_jogo'.
+    """
     global minha_chave_publica, minha_chave_privada
 
     limpar_tela()
@@ -617,6 +727,7 @@ def main():
                     break
 
             # Re-solicita o estado ao servidor para tolerância a perda de pacote UDP
+            print("[REDE] Timeout — reenviando SYNC ao servidor...")
             enviar(sock, endereco_servidor, {'t': 'SYNC'})
 
     sock.close()

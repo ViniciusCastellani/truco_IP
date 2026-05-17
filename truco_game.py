@@ -47,6 +47,11 @@ PONTOS_AO_CORRER = {
 # -------------------------------
 
 def criar_baralho():
+    """Cria e retorna um baralho de 40 cartas embaralhado.
+
+    O baralho é formado pela combinação de todos os naipes (NAIPES) com
+    todos os valores (VALORES), resultando em 40 cartas (sem 8, 9 e 10).
+    """
     baralho = []
 
     for naipe in NAIPES:
@@ -59,6 +64,10 @@ def criar_baralho():
 
 
 def nome_da_carta(carta):
+    """Retorna a representação textual de uma carta, ex.: '3♣'.
+
+    O nome é formado pelo valor ('r') seguido do símbolo do naipe ('s').
+    """
     simbolo = SIMBOLO_NAIPE[carta['s']]
     return carta['r'] + simbolo
 
@@ -68,12 +77,23 @@ def nome_da_carta(carta):
 # -------------------------------
 
 def calcular_valor_da_manilha(vira):
+    """Retorna o valor (rank) da manilha a partir da carta vira.
+
+    A manilha é a carta cujo valor na lista VALORES está imediatamente
+    após o valor da vira (com wraparound circular).
+    """
     indice_vira = VALORES.index(vira['r'])
     indice_manilha = (indice_vira + 1) % 10
     return VALORES[indice_manilha]
 
 
 def forca_da_carta(carta, vira):
+    """Retorna a força numérica de uma carta considerando a vira atual.
+
+    Manilhas recebem força entre 11 e 14, ordenadas pelo naipe conforme
+    ORDEM_NAIPES_MANILHA. Cartas comuns recebem força de 1 a 10 de acordo
+    com sua posição em VALORES.
+    """
     valor_manilha = calcular_valor_da_manilha(vira)
 
     if carta['r'] == valor_manilha:
@@ -84,6 +104,10 @@ def forca_da_carta(carta, vira):
 
 
 def descricao_manilhas(vira):
+    """Retorna uma string descrevendo a hierarquia das manilhas da mão atual.
+
+    Exemplo de retorno: '3♣ > 3♥ > 3♠ > 3♦'
+    """
     valor_manilha = calcular_valor_da_manilha(vira)
 
     partes = []
@@ -98,12 +122,21 @@ def descricao_manilhas(vira):
 # -------------------------------
 
 def oponente(jogador):
+    """Retorna o identificador do jogador adversário.
+
+    Recebe 'p1' e retorna 'p2', ou vice-versa.
+    """
     if jogador == 'p1':
         return 'p2'
     return 'p1'
 
 
 def proximo_nivel_truco(mao):
+    """Retorna o próximo nível de truco disponível para ser pedido.
+
+    Considera o nível pendente ou o nível atual da mão. Retorna None se
+    já estiver no nível máximo ('doze').
+    """
     nivel_atual = mao['truco_pendente'] or mao['nivel_truco']
     indice_atual = NIVEIS_TRUCO.index(nivel_atual)
 
@@ -120,6 +153,11 @@ def proximo_nivel_truco(mao):
 # -------------------------------
 
 def novo_jogo():
+    """Cria e retorna o estado inicial de um novo jogo.
+
+    O jogo começa na fase 'aguardando', sem mão em andamento e com
+    pontuação zerada para ambos os jogadores.
+    """
     return {
         'pontos':  {'p1': 0, 'p2': 0},
         'fase':    'aguardando',
@@ -131,6 +169,13 @@ def novo_jogo():
 
 
 def iniciar_mao(jogo):
+    """Inicializa e retorna o estado do jogo com uma nova mão.
+
+    Distribui 3 cartas para cada jogador, define a carta vira, alterna o
+    dealer e determina quem joga primeiro. Se algum jogador estiver com
+    11 pontos, a fase é alterada para 'mao_de_onze' e a aposta é
+    automaticamente definida como 3 pontos.
+    """
     jogo = copy.deepcopy(jogo)
 
     baralho = criar_baralho()
@@ -188,6 +233,14 @@ def iniciar_mao(jogo):
 # -------------------------------
 
 def jogar_carta(jogo, jogador, indice):
+    """Processa a jogada de uma carta por um jogador.
+
+    Remove a carta no índice informado da mão do jogador e a coloca na
+    mesa. Se o adversário ainda não jogou, passa a vez para ele. Se ambos
+    já jogaram, chama resolver_rodada para determinar o vencedor da rodada.
+
+    Retorna (jogo_atualizado, mensagem).
+    """
     jogo = copy.deepcopy(jogo)
     mao = jogo['mao']
 
@@ -219,6 +272,14 @@ def jogar_carta(jogo, jogador, indice):
 
 
 def pedir_truco(jogo, jogador, nivel):
+    """Processa o pedido de truco de um jogador para o nível indicado.
+
+    Valida se é a vez do jogador e se o nível pedido é o próximo válido
+    na sequência. Em caso de sucesso, altera a fase para 'truco' e
+    registra o pedido pendente.
+
+    Retorna (jogo_atualizado, mensagem).
+    """
     jogo = copy.deepcopy(jogo)
     mao = jogo['mao']
 
@@ -255,6 +316,13 @@ def pedir_truco(jogo, jogador, nivel):
 
 
 def responder_truco(jogo, jogador, aceitar):
+    """Processa a resposta ao truco pendente (aceitar ou correr).
+
+    Se aceitar, atualiza a aposta da mão e determina quem joga a seguir.
+    Se correr, concede os pontos ao jogador que pediu e encerra a mão.
+
+    Retorna (jogo_atualizado, mensagem).
+    """
     jogo = copy.deepcopy(jogo)
     mao = jogo['mao']
 
@@ -307,6 +375,14 @@ def responder_truco(jogo, jogador, aceitar):
 
 
 def decidir_mao_de_onze(jogo, jogador, vai_jogar):
+    """Processa a decisão de um jogador na Mão de Onze (jogar ou fugir).
+
+    Aguarda a decisão de ambos os jogadores. Se um fugir, o adversário
+    recebe 1 ponto. Se ambos fugirem, nenhum ponto é distribuído. Se
+    ambos jogarem, a mão prossegue normalmente valendo 3 pontos.
+
+    Retorna (jogo_atualizado, mensagem).
+    """
     jogo = copy.deepcopy(jogo)
     mao = jogo['mao']
 
@@ -364,6 +440,15 @@ def decidir_mao_de_onze(jogo, jogador, vai_jogar):
 # -------------------------------
 
 def resolver_rodada(jogo):
+    """Compara as cartas da mesa e determina o vencedor da rodada.
+
+    Registra o resultado em mao['rodadas'], limpa a mesa e verifica se a
+    mão já tem um vencedor via calcular_vencedor_da_mao. Se a mão
+    terminar, atualiza pontos e fase; caso contrário, define o próximo a
+    jogar.
+
+    Retorna (jogo_atualizado, mensagem).
+    """
     mao = jogo['mao']
 
     carta_p1 = mao['mesa']['p1']
@@ -428,6 +513,15 @@ def resolver_rodada(jogo):
 
 
 def calcular_vencedor_da_mao(mao):
+    """Determina o vencedor da mão com base no histórico de rodadas.
+
+    Aplica as regras do Truco Paulista: vence quem ganhar 2 rodadas, ou
+    quem ganhou 1 e empatou 1 após 2 rodadas, ou quem tiver mais vitórias
+    após 3 rodadas. Em caso de empate total, vence quem ganhou a primeira
+    rodada não empatada.
+
+    Retorna 'p1', 'p2', 'empate' ou None se a mão ainda não terminou.
+    """
     contagem = {'p1': 0, 'p2': 0, 'empate': 0}
 
     for rodada in mao['rodadas']:
@@ -467,6 +561,11 @@ def calcular_vencedor_da_mao(mao):
 
 
 def verificar_vitoria(jogo):
+    """Verifica se algum jogador atingiu 12 pontos e encerra a partida.
+
+    Se um jogador tiver 12 ou mais pontos, altera a fase para
+    'fim_de_jogo' e registra o vencedor. Retorna o jogo atualizado.
+    """
     for jogador in ('p1', 'p2'):
         if jogo['pontos'][jogador] >= 12:
             jogo['fase'] = 'fim_de_jogo'
